@@ -31,3 +31,5 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+docs/plans/
+model.pkl
