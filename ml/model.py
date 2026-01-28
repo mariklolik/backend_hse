@@ -1,6 +1,10 @@
 import numpy as np
 import pickle
+import mlflow
+from mlflow.sklearn import log_model, load_model as mlflow_load_model
 from sklearn.linear_model import LogisticRegression
+
+MODEL_NAME = "moderation-model"
 
 
 def train_model() -> LogisticRegression:
@@ -41,3 +45,27 @@ def save_model(model: LogisticRegression, path: str = "model.pkl") -> None:
 def load_model(path: str = "model.pkl") -> LogisticRegression:
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+def register_model(model: LogisticRegression) -> None:
+    mlflow.set_tracking_uri("./mlruns")
+    with mlflow.start_run():
+        log_model(model, "model", registered_model_name=MODEL_NAME)
+
+
+def promote_to_production() -> None:
+    mlflow.set_tracking_uri("./mlruns")
+    client = mlflow.MlflowClient()
+    latest = client.get_latest_versions(MODEL_NAME, stages=["None"])
+    if latest:
+        client.transition_model_version_stage(
+            name=MODEL_NAME,
+            version=latest[0].version,
+            stage="Production",
+        )
+
+
+def load_from_mlflow(stage: str = "Production") -> LogisticRegression:
+    mlflow.set_tracking_uri("./mlruns")
+    model_uri = f"models:/{MODEL_NAME}/{stage}"
+    return mlflow_load_model(model_uri)
