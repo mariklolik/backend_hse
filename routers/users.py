@@ -3,7 +3,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from clients.kafka import send_moderation_request
 from db.repositories.advertisements import get_advertisement
+from db.repositories.moderation import create_moderation_task, get_moderation_result
 from ml.features import extract_features
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,19 @@ class PredictionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     is_violation: bool
     probability: float
+
+
+class AsyncPredictResponse(BaseModel):
+    task_id: int
+    status: str
+    message: str
+
+
+class ModerationResultResponse(BaseModel):
+    task_id: int
+    status: str
+    is_violation: bool | None
+    probability: float | None
 
 
 @router.post("/predict", response_model=PredictionResponse)
@@ -82,3 +97,44 @@ async def simple_predict(req: Request, item_id: int = Query(..., ge=0)):
     is_violation = probability >= 0.5
 
     return PredictionResponse(is_violation=is_violation, probability=probability)
+
+
+@router.post("/async_predict", response_model=AsyncPredictResponse)
+async def async_predict(req: Request, item_id: int = Query(..., ge=0)):
+    db_pool = req.app.state.db_pool
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    ad = await get_advertisement(db_pool, item_id)
+    if ad is None:
+        raise HTTPException(status_code=404, detail="Advertisement not found")
+
+    task = await create_moderation_task(db_pool, item_id)
+
+    kafka_producer = req.app.state.kafka_producer
+    if kafka_producer is not None:
+        await send_moderation_request(kafka_producer, item_id)
+
+    return AsyncPredictResponse(
+        task_id=task["id"],
+        status="pending",
+        message="Moderation request accepted",
+    )
+
+
+@router.get("/moderation_result/{task_id}", response_model=ModerationResultResponse)
+async def moderation_result(task_id: int, req: Request):
+    db_pool = req.app.state.db_pool
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    result = await get_moderation_result(db_pool, task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return ModerationResultResponse(
+        task_id=result["id"],
+        status=result["status"],
+        is_violation=result["is_violation"],
+        probability=result["probability"],
+    )

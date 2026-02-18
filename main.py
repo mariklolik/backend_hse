@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from clients.kafka import create_kafka_producer
 from db.connection import create_pool, close_pool
 from ml.model import (
     train_model,
@@ -49,7 +50,20 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Database pool creation failed: {e}")
         app.state.db_pool = None
 
+    try:
+        app.state.kafka_producer = await create_kafka_producer()
+        logger.info("Kafka producer created")
+    except Exception as e:
+        logger.warning(f"Kafka producer creation failed: {e}")
+        app.state.kafka_producer = None
+
     yield
+
+    if app.state.kafka_producer is not None:
+        try:
+            await app.state.kafka_producer.stop()
+        except Exception:
+            pass
 
     if app.state.db_pool is not None:
         await close_pool(app.state.db_pool)
