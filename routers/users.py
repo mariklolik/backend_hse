@@ -1,8 +1,9 @@
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from db.repositories.advertisements import get_advertisement
 from ml.features import extract_features
 
 logger = logging.getLogger(__name__)
@@ -52,5 +53,32 @@ async def predict(request: PredictionRequest, req: Request):
         f"item_id={request.item_id} is_violation={is_violation} "
         f"probability={probability:.4f}"
     )
+
+    return PredictionResponse(is_violation=is_violation, probability=probability)
+
+
+@router.post("/simple_predict", response_model=PredictionResponse)
+async def simple_predict(req: Request, item_id: int = Query(..., ge=0)):
+    model = req.app.state.model
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not available")
+
+    db_pool = req.app.state.db_pool
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    ad = await get_advertisement(db_pool, item_id)
+    if ad is None:
+        raise HTTPException(status_code=404, detail="Advertisement not found")
+
+    features = extract_features(
+        ad["is_verified_seller"],
+        ad["images_qty"],
+        ad["description"],
+        ad["category"],
+    )
+
+    probability = model.predict_proba(features)[0][1]
+    is_violation = probability >= 0.5
 
     return PredictionResponse(is_violation=is_violation, probability=probability)

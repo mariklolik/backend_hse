@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from db.connection import create_pool, close_pool
 from ml.model import (
     train_model,
     save_model,
@@ -40,7 +41,18 @@ async def lifespan(app: FastAPI):
     else:
         app.state.model = load_model(MODEL_PATH)
         logger.info("Model loaded from pickle")
+
+    try:
+        app.state.db_pool = await create_pool()
+        logger.info("Database pool created")
+    except Exception as e:
+        logger.warning(f"Database pool creation failed: {e}")
+        app.state.db_pool = None
+
     yield
+
+    if app.state.db_pool is not None:
+        await close_pool(app.state.db_pool)
     app.state.model = None
 
 
