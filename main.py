@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from clients.kafka import create_kafka_producer
+from clients.redis import create_redis_client
 from db.connection import create_pool, close_pool
 from ml.model import (
     train_model,
@@ -57,11 +58,24 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Kafka producer creation failed: {e}")
         app.state.kafka_producer = None
 
+    try:
+        app.state.redis_client = await create_redis_client()
+        logger.info("Redis client created")
+    except Exception as e:
+        logger.warning(f"Redis client creation failed: {e}")
+        app.state.redis_client = None
+
     yield
 
     if app.state.kafka_producer is not None:
         try:
             await app.state.kafka_producer.stop()
+        except Exception:
+            pass
+
+    if app.state.redis_client is not None:
+        try:
+            await app.state.redis_client.aclose()
         except Exception:
             pass
 

@@ -28,3 +28,20 @@ async def get_advertisement(pool: asyncpg.Pool, item_id: int) -> dict | None:
             item_id,
         )
         return dict(row) if row else None
+
+
+async def close_advertisement(pool: asyncpg.Pool, item_id: int) -> bool:
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM advertisements WHERE id = $1",
+            item_id,
+        )
+        return result == "DELETE 1"
+
+
+async def delete_moderation_results_for_item(pool: asyncpg.Pool, item_id: int) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM moderation_results WHERE item_id = $1",
+            item_id,
+        )

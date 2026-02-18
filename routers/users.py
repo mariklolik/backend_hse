@@ -3,8 +3,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from cache.predictions import get_cached_prediction, set_cached_prediction, delete_cached_prediction
 from clients.kafka import send_moderation_request
-from db.repositories.advertisements import get_advertisement
+from db.repositories.advertisements import get_advertisement, close_advertisement, delete_moderation_results_for_item
 from db.repositories.moderation import create_moderation_task, get_moderation_result
 from ml.features import extract_features
 
@@ -39,6 +40,10 @@ class ModerationResultResponse(BaseModel):
     status: str
     is_violation: bool | None
     probability: float | None
+
+
+class CloseResponse(BaseModel):
+    message: str
 
 
 @router.post("/predict", response_model=PredictionResponse)
@@ -82,6 +87,12 @@ async def simple_predict(req: Request, item_id: int = Query(..., ge=0)):
     if db_pool is None:
         raise HTTPException(status_code=503, detail="Database not available")
 
+    redis_client = req.app.state.redis_client
+    if redis_client is not None:
+        cached = await get_cached_prediction(redis_client, item_id)
+        if cached is not None:
+            return PredictionResponse(**cached)
+
     ad = await get_advertisement(db_pool, item_id)
     if ad is None:
         raise HTTPException(status_code=404, detail="Advertisement not found")
@@ -95,6 +106,9 @@ async def simple_predict(req: Request, item_id: int = Query(..., ge=0)):
 
     probability = model.predict_proba(features)[0][1]
     is_violation = probability >= 0.5
+
+    if redis_client is not None:
+        await set_cached_prediction(redis_client, item_id, is_violation, float(probability))
 
     return PredictionResponse(is_violation=is_violation, probability=probability)
 
@@ -138,3 +152,23 @@ async def moderation_result(task_id: int, req: Request):
         is_violation=result["is_violation"],
         probability=result["probability"],
     )
+
+
+@router.post("/close", response_model=CloseResponse)
+async def close(req: Request, item_id: int = Query(..., ge=0)):
+    db_pool = req.app.state.db_pool
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    ad = await get_advertisement(db_pool, item_id)
+    if ad is None:
+        raise HTTPException(status_code=404, detail="Advertisement not found")
+
+    await delete_moderation_results_for_item(db_pool, item_id)
+    await close_advertisement(db_pool, item_id)
+
+    redis_client = req.app.state.redis_client
+    if redis_client is not None:
+        await delete_cached_prediction(redis_client, item_id)
+
+    return CloseResponse(message="Advertisement closed")
